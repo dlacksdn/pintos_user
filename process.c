@@ -411,7 +411,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
             {
               bool writable = (phdr.p_flags & PF_W) != 0;
               uint32_t file_page = phdr.p_offset & ~PGMASK;
-              uint32_t mem_page = phdr.p_vaddr & ~PGMASK;
+              uint32_t mem_page = phdr.p_vaddr & ~PGMASK; // <---- PGMASK에 덮여서 중복이 발생?
               uint32_t page_offset = phdr.p_vaddr & PGMASK;
               uint32_t read_bytes, zero_bytes;
               if (phdr.p_filesz > 0)
@@ -548,7 +548,7 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       memset (kpage + page_read_bytes, 0, page_zero_bytes);
 
       /* Add the page to the process's address space. */
-      if (!install_page (upage, kpage, writable)) 
+      if (!install_page (upage, kpage, writable)) // <---- 문제
         {
           palloc_free_page (kpage);
           return false; 
@@ -598,6 +598,6 @@ install_page (void *upage, void *kpage, bool writable)
 
   /* Verify that there's not already a page at that virtual
      address, then map our page there. */
-  return (pagedir_get_page (t->pagedir, upage) == NULL
+  return (pagedir_get_page (t->pagedir, upage) == NULL // <----- 이놈이 false임
           && pagedir_set_page (t->pagedir, upage, kpage, writable));
 }
