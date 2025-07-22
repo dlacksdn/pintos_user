@@ -5,6 +5,7 @@
 #include <list.h>
 #include <stdint.h>
 #include "filesys/file.h"   /* for struct file */
+#include "threads/synch.h"      /* for struct semaphore */
 
 /* States in a thread's life cycle. */
 enum thread_status
@@ -136,6 +137,14 @@ struct thread
 
     /* Exit code supplied by the process via the exit() syscall. */
     int exit_status;
+
+    struct list children;       /* List of this thread’s child threads */
+    struct list_elem child_elem;/* Element in parent’s children list */
+    struct thread *parent;      /* Pointer back to my parent */
+
+    struct semaphore wait_sema; /* Parent blocks on this in process_wait */
+    bool has_exited;            /* True once this child has called process_exit */
+    /* exit_status already exists */
     
 #endif
 
@@ -184,6 +193,9 @@ tid_t thread_create_lottery(const char *name, int priority, int tickets,
                             thread_func *function, void *aux);
 tid_t thread_create_stride(const char *name, int priority, int tickets,
                             thread_func *function, void *aux);
+
+/* Returns the thread whose tid == TID, or NULL if not found. */
+struct thread *get_thread_by_tid(tid_t tid);
 
 
 

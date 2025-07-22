@@ -63,6 +63,16 @@ process_execute (const char *cmd_line)
   tid = thread_create (thread_name, PRI_DEFAULT, // "echo" "31" "start_process" "echo foo bar"
                        start_process, fn_copy);
 
+  #ifdef USERPROG
+  if (tid != TID_ERROR)
+    {
+      struct thread *child = get_thread_by_tid (tid);
+      child->parent = thread_current ();
+      list_push_back (&thread_current()->children,
+                      &child->child_elem);
+    }
+  #endif
+
   /* 4) We no longer need the standalone name page. */
   palloc_free_page (thread_name);
 
@@ -117,6 +127,7 @@ start_process (void *file_name_) // file_name_ = "echo foo bar" 의 주소값
   palloc_free_page (file_name);
   asm volatile ("movl %0, %%esp; jmp intr_exit"
                 : : "g" (&if_) : "memory");
+
   NOT_REACHED ();
 }
 
@@ -180,10 +191,33 @@ setup_user_stack (void **esp, char **argv, int argc)
    This function will be implemented in problem 2-2.  For now, it
    does nothing. */
 int
-process_wait (tid_t child_tid UNUSED) 
+process_wait (tid_t child_tid) 
 {
+  struct thread *cur = thread_current ();
+  struct list_elem *e;
+
+  /* Find the child in our list */
+  for (e = list_begin (&cur->children);
+       e != list_end (&cur->children);
+       e = list_next (e)) 
+    {
+      struct thread *child = list_entry (e, struct thread, child_elem);
+      if (child->tid == child_tid) 
+        {
+          /* If child hasn’t exited yet, block until it does. */
+          if (!child->has_exited)
+            sema_down (&child->wait_sema);
+          int status = child->exit_status;
+          /* Clean up the child record. */
+          list_remove (&child->child_elem);
+          return status;
+        }
+    }
+
+  /* No such child. */
   return -1;
 }
+
 
 /* Free the current process's resources. */
 void
@@ -194,6 +228,13 @@ process_exit (int status)
 
   /* Print exit status just before tearing down */
   printf ("%s: exit(%d)\n", thread_name(), status);
+
+  #ifdef USERPROG
+  /* --- Signal parent (if any) that we’re done. --- */
+  cur->exit_status = status;       /* already set, but safe to reaffirm */
+  cur->has_exited = true;          /* mark that we have exited */
+  sema_up (&cur->wait_sema);       /* unblock the parent in process_wait() */
+  #endif
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
@@ -525,36 +566,44 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
   ASSERT (pg_ofs (upage) == 0);
   ASSERT (ofs % PGSIZE == 0);
 
+  /* Start reading from offset OFS in FILE. */
   file_seek (file, ofs);
+
   while (read_bytes > 0 || zero_bytes > 0) 
     {
-      /* Calculate how to fill this page.
-         We will read PAGE_READ_BYTES bytes from FILE
-         and zero the final PAGE_ZERO_BYTES bytes. */
       size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
       size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
-      /* Get a page of memory. */
+      /* Allocate a page of memory. */
       uint8_t *kpage = palloc_get_page (PAL_USER);
       if (kpage == NULL)
         return false;
 
-      /* Load this page. */
+      /* Read the requested bytes from FILE. */
       if (file_read (file, kpage, page_read_bytes) != (int) page_read_bytes)
         {
           palloc_free_page (kpage);
-          return false; 
+          return false;
         }
+      /* Zero the remainder. */
       memset (kpage + page_read_bytes, 0, page_zero_bytes);
 
-      /* Add the page to the process's address space. */
-      if (!install_page (upage, kpage, writable)) // <---- 문제
+      /* If UPAGE is already mapped, just discard kpage. */
+      if (pagedir_get_page (thread_current ()->pagedir, upage) != NULL)
         {
           palloc_free_page (kpage);
-          return false; 
+        }
+      else
+        {
+          /* Otherwise install it. */
+          if (!install_page (upage, kpage, writable))
+            {
+              palloc_free_page (kpage);
+              return false;
+            }
         }
 
-      /* Advance. */
+      /* Advance to next page in segment. */
       read_bytes -= page_read_bytes;
       zero_bytes -= page_zero_bytes;
       upage += PGSIZE;
