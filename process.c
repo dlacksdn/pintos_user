@@ -18,6 +18,12 @@
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 
+#define MAX_ARGS 128 // new
+#define FDCOUNT_LIMIT 128 // new
+
+/* Forward declaration of our helper. */
+static void setup_user_stack (void **esp, char **argv, int argc); // new
+
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
 
@@ -25,55 +31,143 @@ static bool load (const char *cmdline, void (**eip) (void), void **esp);
    FILENAME.  The new thread may be scheduled (and may even exit)
    before process_execute() returns.  Returns the new process's
    thread id, or TID_ERROR if the thread cannot be created. */
+// The job of process_execute() is to spawn a new Pintos thread that will load and run that program.
+// file_name is the user-supplied command line (e.g. "grep foo bar").
+
+/* Modified process_execute(): copy full cmd_line, extract thread name, pass full line */
 tid_t
-process_execute (const char *file_name) 
+process_execute (const char *cmd_line) 
 {
-  char *fn_copy;
+  char *fn_copy, *thread_name;
+  char *save_ptr;
   tid_t tid;
 
-  /* Make a copy of FILE_NAME.
-     Otherwise there's a race between the caller and load(). */
+  /* 1) Copy full command line into a fresh page. */
   fn_copy = palloc_get_page (0);
   if (fn_copy == NULL)
     return TID_ERROR;
-  strlcpy (fn_copy, file_name, PGSIZE);
+  strlcpy (fn_copy, cmd_line, PGSIZE); 
 
-  /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy);
+  /* 2) Extract first token as thread name (in its own page). */
+  thread_name = palloc_get_page (0);
+  if (thread_name == NULL)
+    {
+      palloc_free_page (fn_copy);
+      return TID_ERROR;
+    }
+  strlcpy (thread_name, fn_copy, PGSIZE);
+  strtok_r (thread_name, " \t\r\n", &save_ptr);
+
+  /* 3) Create the thread, passing fn_copy (full cmd line) as aux. */
+  // start_process()의 인자로 fn_copy가 들어간다
+  tid = thread_create (thread_name, PRI_DEFAULT, // "echo" "31" "start_process" "echo foo bar"
+                       start_process, fn_copy);
+
+  /* 4) We no longer need the standalone name page. */
+  palloc_free_page (thread_name);
+
+  /* 5) On failure, free fn_copy to avoid leak. */
   if (tid == TID_ERROR)
-    palloc_free_page (fn_copy); 
+    palloc_free_page (fn_copy);
+
   return tid;
 }
 
 /* A thread function that loads a user process and starts it
    running. */
+  
+/* Modified start_process(): parse args → load → setup stack → intr_exit jump */
 static void
-start_process (void *file_name_)
+start_process (void *file_name_) // file_name_ = "echo foo bar" 의 주소값
 {
   char *file_name = file_name_;
   struct intr_frame if_;
   bool success;
 
-  /* Initialize interrupt frame and load executable. */
-  memset (&if_, 0, sizeof if_);
-  if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
-  if_.cs = SEL_UCSEG;
+  /* --- 1) Initialize interrupt frame --- */
+  memset (&if_, 0, sizeof if_); // intr_frame의 모든 필드 if_가 0으로 설정된 후 필요한 필드만 명시적으로 초기화합니다
+  if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG; // User data selector
+  if_.cs = SEL_UCSEG; // User code selector.
   if_.eflags = FLAG_IF | FLAG_MBS;
-  success = load (file_name, &if_.eip, &if_.esp);
 
-  /* If load failed, quit. */
-  palloc_free_page (file_name);
+  /* --- 2) Tokenize the command line in-place --- */
+  char *argv[MAX_ARGS];
+  int argc = 0;
+  char *save_ptr, *token;
+  for (token = strtok_r (file_name, " \t\r\n", &save_ptr);
+       token != NULL;
+       token = strtok_r (NULL, " \t\r\n", &save_ptr))
+    {
+      if (argc < MAX_ARGS)
+        argv[argc++] = token;
+    }
+
+  /* --- 3) Load the executable using argv[0] as program name --- */
+  success = load (argv[0], &if_.eip, &if_.esp);
   if (!success) 
-    thread_exit ();
+    {
+      palloc_free_page (file_name);
+      thread_exit ();
+    }
 
-  /* Start the user process by simulating a return from an
-     interrupt, implemented by intr_exit (in
-     threads/intr-stubs.S).  Because intr_exit takes all of its
-     arguments on the stack in the form of a `struct intr_frame',
-     we just point the stack pointer (%esp) to our stack frame
-     and jump to it. */
-  asm volatile ("movl %0, %%esp; jmp intr_exit" : : "g" (&if_) : "memory");
+  /* --- 4) Build the user stack with argc/argv --- */
+  setup_user_stack (&if_.esp, argv, argc);
+
+  /* --- 5) Clean up and transfer to user mode --- */
+  palloc_free_page (file_name);
+  asm volatile ("movl %0, %%esp; jmp intr_exit"
+                : : "g" (&if_) : "memory");
   NOT_REACHED ();
+}
+
+/* Helper to push argc, argv strings + pointers onto user stack. */
+static void
+setup_user_stack (void **esp, char **argv, int argc) 
+{
+  int i;
+  void *arg_addrs[MAX_ARGS];
+
+  /* 1) Push each argument string bytes onto the stack (in reverse). */
+  for (i = argc - 1; i >= 0; i--) 
+    {
+      size_t len = strlen (argv[i]) + 1;
+      *esp = (uint8_t *) *esp - len;
+      memcpy (*esp, argv[i], len);
+      arg_addrs[i] = *esp;
+    }
+
+  /* 2) Word-align stack pointer to multiple of 4 bytes. */
+  uintptr_t sp = (uintptr_t) *esp;
+  size_t align = sp % 4;
+  if (align != 0) 
+    {
+      *esp = (uint8_t *) *esp - align;
+      memset (*esp, 0, align);
+    }
+
+  /* 3) Null sentinel for argv[argc]. */
+  *esp = (uint8_t *) *esp - sizeof (char *);
+  *(char **) *esp = NULL;
+
+  /* 4) Push addresses of each argument (in reverse). */
+  for (i = argc - 1; i >= 0; i--) 
+    {
+      *esp = (uint8_t *) *esp - sizeof (char *);
+      memcpy (*esp, &arg_addrs[i], sizeof (char *));
+    }
+
+  /* 5) Push argv (i.e. address of argv[0]). */
+  void *argv0 = *esp;
+  *esp = (uint8_t *) *esp - sizeof (char **);
+  memcpy (*esp, &argv0, sizeof (char **));
+
+  /* 6) Push argc. */
+  *esp = (uint8_t *) *esp - sizeof (int);
+  memcpy (*esp, &argc, sizeof (int));
+
+  /* 7) Push fake return address. */
+  *esp = (uint8_t *) *esp - sizeof (void *);
+  memset (*esp, 0, sizeof (void *));
 }
 
 /* Waits for thread TID to die and returns its exit status.  If
@@ -93,10 +187,13 @@ process_wait (tid_t child_tid UNUSED)
 
 /* Free the current process's resources. */
 void
-process_exit (void)
+process_exit (int status)
 {
   struct thread *cur = thread_current ();
   uint32_t *pd;
+
+  /* Print exit status just before tearing down */
+  printf ("%s: exit(%d)\n", thread_name(), status);
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
@@ -130,6 +227,47 @@ process_activate (void)
   /* Set thread's kernel stack for use in processing
      interrupts. */
   tss_update ();
+}
+
+/* Retrieve the struct file* for this thread’s fd, or NULL. */
+struct file *
+process_get_file (int fd) 
+{
+  struct thread *cur = thread_current ();
+  if (fd < 0 || fd >= FDCOUNT_LIMIT)
+    return NULL;
+  return cur->fd_table[fd];
+}
+
+/* Install file in the first free slot ≥ 2, return that fd or –1. */
+int
+process_add_file (struct file *file) 
+{
+  struct thread *cur = thread_current ();
+  for (int fd = 2; fd < FDCOUNT_LIMIT; fd++) 
+    {
+      if (cur->fd_table[fd] == NULL) 
+        {
+          cur->fd_table[fd] = file;
+          return fd;
+        }
+    }
+  return -1;
+}
+
+/* Close and remove an fd; return true on success. */
+bool
+process_close_file (int fd) 
+{
+  struct thread *cur = thread_current ();
+  if (fd < 2 || fd >= FDCOUNT_LIMIT)
+    return false;
+  struct file *f = cur->fd_table[fd];
+  if (f == NULL)
+    return false;
+  file_close (f);
+  cur->fd_table[fd] = NULL;
+  return true;
 }
 
 /* We load ELF binaries.  The following definitions are taken
@@ -291,7 +429,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
                   read_bytes = 0;
                   zero_bytes = ROUND_UP (page_offset + phdr.p_memsz, PGSIZE);
                 }
-              if (!load_segment (file, file_page, (void *) mem_page,
+              if (!load_segment (file, file_page, (void *) mem_page, // 문제 발생
                                  read_bytes, zero_bytes, writable))
                 goto done;
             }

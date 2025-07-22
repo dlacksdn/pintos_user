@@ -384,7 +384,7 @@ thread_exit (void)
   ASSERT (!intr_context ());
 
 #ifdef USERPROG
-  process_exit ();
+  process_exit (thread_current()->exit_status);
 #endif
 
   /* Remove thread from all threads list, set our status to dying,
@@ -734,7 +734,6 @@ init_thread (struct thread *t, const char *name, int priority)
     t->tickets *= t->priority;
   }
 
-
   t->stride = BIG_STRIDE / t->tickets;
 
   if(!is_late_arrival)
@@ -743,6 +742,14 @@ init_thread (struct thread *t, const char *name, int priority)
     t->pass = min_pass_num;
 
   t->perf_id=0;
+
+  #ifdef USERPROG
+  /* Initialize our per-process fd table and index. */
+  for (int i = 0; i < FDCOUNT_LIMIT; i++)
+    t->fd_table[i] = NULL;
+  t->next_fd = 2;            /* 0 and 1 are console */
+  t->exit_status = 0;
+  #endif
   
 
   list_push_back (&all_list, &t->allelem);

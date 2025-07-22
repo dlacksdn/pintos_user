@@ -4,6 +4,7 @@
 #include <debug.h>
 #include <list.h>
 #include <stdint.h>
+#include "filesys/file.h"   /* for struct file */
 
 /* States in a thread's life cycle. */
 enum thread_status
@@ -125,6 +126,16 @@ struct thread
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
+
+    /* File-descriptor table.  0 and 1 are reserved for STDIN/STDOUT. */
+    #define FDCOUNT_LIMIT 128
+    struct file *fd_table[FDCOUNT_LIMIT];
+
+    /* Next slot to try when allocating a new fd. */
+    int next_fd;
+
+    /* Exit code supplied by the process via the exit() syscall. */
+    int exit_status;
     
 #endif
 
