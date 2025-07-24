@@ -29,7 +29,6 @@ syscall_init (void)
 static void
 syscall_handler (struct intr_frame *f) 
 {
-  printf("in SYS_WRITE_test1\n");
   int *uargs = (int *) f->esp;
   if (!is_user_vaddr (uargs))
     process_exit (-1);
@@ -42,7 +41,6 @@ syscall_handler (struct intr_frame *f)
 
       case SYS_WRITE:
         {
-          printf("in SYS_WRITE_test1\n");
           int fd    = uargs[1];
           void *buf = (void *) uargs[2];
           unsigned sz = (unsigned) uargs[3];
