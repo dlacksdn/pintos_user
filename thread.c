@@ -11,8 +11,6 @@
 #include "threads/switch.h"
 #include "threads/synch.h"
 #include "threads/vaddr.h"
-#include "threads/malloc.h"
-#include <debug.h>
 #ifdef USERPROG
 #include "userprog/process.h"
 #endif
@@ -582,21 +580,6 @@ tid_t thread_create_stride(const char *name, int priority, int tickets,
   return tid;
 }
 
-struct thread *
-get_thread_by_tid (tid_t tid) 
-{
-  struct list_elem *e;
-
-  for (e = list_begin (&all_list); e != list_end (&all_list); 
-       e = list_next (e)) 
-    {
-      struct thread *t = list_entry (e, struct thread, allelem);
-      if (t->tid == tid)
-        return t;
-    }
-  return NULL;
-}
-
 /* Invoke function 'func' on all threads, passing along 'aux'.
    This function must be called with interrupts off. */
 void
@@ -766,11 +749,7 @@ init_thread (struct thread *t, const char *name, int priority)
     t->fd_table[i] = NULL;
   t->next_fd = 2;            /* 0 and 1 are console */
   t->exit_status = 0;
-
-  list_init (&t->children);
-  sema_init (&t->wait_sema, 0);
-  t->has_exited = false;
-  t->parent     = NULL;
+  t->executable = NULL;
   #endif
   
 
