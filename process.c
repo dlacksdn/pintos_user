@@ -107,6 +107,7 @@ start_process (void *file_name_) // file_name_ = "echo foo bar" 의 주소값
   if (!success) 
     {
       palloc_free_page (file_name);
+      thread_current()->exit_status = -1;
       thread_exit ();
     }
 
@@ -210,6 +211,12 @@ process_exit (int status)
   for (int fd = 2; fd < FDCOUNT_LIMIT; fd++) // exiting or terminating a process implicitly closes all its open file descriptors
     if (cur->fd_table[fd] != NULL)
         process_close_file(fd);
+
+  /* 실행 파일에 대한 deny-write 해제 및 닫기 */
+  if (cur->executable != NULL) {
+    file_close(cur->executable);
+    cur->executable = NULL;
+  }
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
@@ -468,7 +475,12 @@ load (const char *file_name, void (**eip) (void), void **esp)
 
  done:
   /* We arrive here whether the load is successful or not. */
-  file_close (file);
+  // file_close (file); 
+  // close는 file_allow_write를 호출하기 때문에 deny_write를 정상적으로 동작시키려면 넣으면 안 됨
+  // 공식문서에도 you must keep it open as long as the process is still running 이라고 명시 되어 있음
+  // 내가 임의로 file_close를 지운것이기 때문에 process_exit에서 file_close를 호출하려고 한다. 그러면 공식문서에 부합한다고 판단
+  file_deny_write(file);
+  thread_current()->executable = file;
   return success;
 }
 

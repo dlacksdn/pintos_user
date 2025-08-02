@@ -78,6 +78,12 @@ syscall_handler (struct intr_frame *f)
       case SYS_EXEC:
         syscall_exec (f, uargs);
 
+      case SYS_HALT:
+        syscall_halt ();
+
+      case SYS_WAIT:
+        syscall_wait (f, uargs);
+
       default:
           process_exit (-1);
     }
@@ -85,7 +91,7 @@ syscall_handler (struct intr_frame *f)
 
 // null pointer | virtual memory와 mapping되지 않은 pointer | kernel virtual address에 있는 pointer (PHYS_BASE 위) 를 막는 함수
 static void
-check_address(const void *addr, size_t size) 
+check_address_buffer(const void *addr, size_t size) 
 {
   uint8_t *start = (uint8_t *) addr;
   for (size_t i = 0; i < size; i++) {
@@ -99,12 +105,35 @@ check_address(const void *addr, size_t size)
   }
 }
 
+static void
+check_address_file(const char *addr)
+{
+  while (true) 
+    {
+      /* 1) 널 체크, user 영역 체크, 매핑 체크 */
+      if (addr == NULL
+          || !is_user_vaddr (addr)
+          || pagedir_get_page (thread_current ()->pagedir, addr) == NULL) {
+
+            thread_current()->exit_status = -1;
+            thread_exit();
+          }
+
+      /* 2) 널 문자 만나면 성공적으로 끝 */
+      if (*addr == '\0')
+        return;
+
+      /* 3) 다음 문자 검사 */
+      addr++;
+    }
+}
+
 /* 1. bool create(const char *file, unsigned initial_size) */
 void 
 syscall_create(struct intr_frame *f, int *uargs) 
 {
-  const char *file = uargs[1];
-  check_address(file, strlen(file) + 1);  // null까지 보려고 +1을 한다
+  const char *file = (const char *) uargs[1];
+  check_address_file(file);  
 
   unsigned initial_size = uargs[2];
   f->eax = filesys_create(file, initial_size);
@@ -115,8 +144,8 @@ syscall_create(struct intr_frame *f, int *uargs)
 void 
 syscall_remove(struct intr_frame *f, int *uargs) 
 {
-    const char *file = uargs[1];
-    check_address(file, strlen(file) + 1);
+    const char *file = (const char *) uargs[1];
+    check_address_file(file);
     
     f->eax = filesys_remove(file);
 }
@@ -127,7 +156,7 @@ void
 syscall_open (struct intr_frame *f, int *uargs)
 {
   const char *fn = (const char *) uargs[1];
-  check_address(fn, strlen(fn) + 1);
+  check_address_file(fn);
 
   lock_acquire (&fs_lock);
   struct file *file = filesys_open (fn);
@@ -148,7 +177,7 @@ syscall_read (struct intr_frame *f, int *uargs)
   unsigned sz = (unsigned) uargs[3];
 
   // file이 아니라 buffer이기 때문에 null이 없어서 +1을 하지 않는다
-  check_address(buf, sz);
+  check_address_buffer(buf, sz);
 
   if (fd == STDIN_FILENO) { // 파일시스템이 아니라 콘솔 장치(키보드)에서 직접 가져온다
     for (int i = 0; i < (int) sz; i++)
@@ -174,12 +203,12 @@ syscall_read (struct intr_frame *f, int *uargs)
 void
 syscall_write (struct intr_frame *f, int *uargs)
 {
-  printf("syscall_write\n");
+  // printf("syscall_write\n");
   int    fd  = uargs[1];
   void  *buf = (void *) uargs[2];
   unsigned sz = (unsigned) uargs[3];
 
-  check_address(buf, sz); // 이건 아예 주소가 잘못 되서 process를 종료 시키는 것
+  check_address_buffer(buf, sz); // 이건 아예 주소가 잘못 되서 process를 종료 시키는 것
 
   if (fd == STDOUT_FILENO) {
     putbuf (buf, sz);
@@ -258,7 +287,7 @@ syscall_close (struct intr_frame *f, int *uargs)
 void
 syscall_exit (struct intr_frame *f, int *uargs)
 {
-  printf("syscall_exit\n");
+  // printf("syscall_exit\n");
   // syscall_exit가 바로 호출되면 exit_status를 바꿔주지 못하므로 코드를 추가했다
   int status = uargs[1];
 
@@ -275,6 +304,20 @@ syscall_exit (struct intr_frame *f, int *uargs)
 // 현재 프로세스를 cmd_line에서 지정된 인수를 전달하여 이름이 지정된 실행 파일로 변경
 void
 syscall_exec (struct intr_frame *f, int *uargs)
+{
+
+}
+
+// void halt (void) 
+void
+syscall_halt() 
+{
+  shutdown_power_off ();
+}
+
+// int wait (pid_t pid)
+void 
+syscall_wait(struct intr_frame *f, int *uargs)
 {
 
 }
